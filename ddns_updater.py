@@ -2,15 +2,14 @@
 Dynamic DNS Updater for domain.tenten.vn
 Automates A record updates using Playwright browser automation
 """
+import asyncio
 import json
 import logging
-import sys
-import asyncio
 import random
-import math
+import sys
 from typing import Optional, Dict, Any, List
 import argparse
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import async_playwright, Page, BrowserContext, ViewportSize
 import requests
 
 class TentenDDNSUpdater:
@@ -127,25 +126,17 @@ class TentenDDNSUpdater:
 
             self.browser = await self.playwright.chromium.launch_persistent_context(
                 headless=browser_settings.get("headless", False),
-                user_data_dir=browser_settings.get("user_data_dir", "chrome-data"),
+                args=browser_settings.get("args"),
+                ignore_default_args= browser_settings.get("ignore_default_args"),
                 user_agent=browser_settings.get("user_agent", ""),
-                no_viewport= browser_settings.get("no_viewport", True),
-                args=browser_settings.get("args", [
-                    "--disable-gpu",
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--disable-dev-shm-usage",
-                    "--disable-setuid-sandbox",
-                    "--disable-web-security",
-                ]),
-                ignore_default_args= browser_settings.get("ignore_default_args", [
-                    "--enable-automation",
-                    "--disable-extensions"
-                ]),
+                user_data_dir=browser_settings.get("user_data_dir", ""),
+                viewport= ViewportSize(browser_settings.get("viewport", {})) if browser_settings.get("viewport") else None,
+                device_scale_factor=browser_settings.get("device_scale_factor", 1),
+                locale= browser_settings.get("locale", "vi-VN"),
+                timezone_id=browser_settings.get("timezone_id", "Asia/Ho_Chi_Minh")
             )
 
-            self.page = await self.browser.new_page()
+            self.page = self.browser.pages[0] if self.browser.pages else await self.browser.new_page()
             self.page.set_default_timeout(browser_settings.get("timeout", 30000))
 
             self.logger.info("Browser initialized successfully")
@@ -161,68 +152,26 @@ class TentenDDNSUpdater:
             try:
                 element = await search_context.query_selector(selector)
                 if element:
+                    await element.focus() if await element.evaluate('el => el.tagName.toLowerCase() in ["input", "textarea"]') else None
                     return element
-            except Exception:
+            except:
                 continue
         return None
 
-    async def simulate_human_mouse_movement(self, duration: float = 2.0):
-        """Simulate realistic human mouse movements"""
-        width, height = await self.page.evaluate('() => [window.innerWidth, window.innerHeight]')
+    async def check_login_status(self) -> bool:
+        """Check if login was successful and handle errors"""
+        current_url = self.page.url
+        if "login" not in current_url.lower():
+            return True
 
-        # Generate random path with natural curves
-        start_x = random.randint(50, width - 50)
-        start_y = random.randint(50, height - 50)
+        error_element = await self.find_element(self.ERROR_SELECTORS)
+        if error_element:
+            error_text = await error_element.inner_text()
+            self.logger.error(f"Login error: {error_text}")
+            return False
 
-        # Move to starting position
-        await self.page.mouse.move(start_x, start_y)
-
-        # Create curved path with multiple waypoints
-        waypoints = []
-        for i in range(random.randint(3, 7)):
-            x = random.randint(50, width - 50)
-            y = random.randint(50, height - 50)
-            waypoints.append((x, y))
-
-        # Smooth movement between waypoints
-        for target_x, target_y in waypoints:
-            current_pos = await self.page.evaluate('() => ({ x: window.mouseX || 0, y: window.mouseY || 0 })')
-            start_x = current_pos.get('x', start_x)
-            start_y = current_pos.get('y', start_y)
-
-            # Calculate distance and steps
-            distance = math.sqrt((target_x - start_x)**2 + (target_y - start_y)**2)
-            steps = max(10, int(distance / 10))
-
-            for step in range(steps):
-                progress = step / steps
-                # Add some randomness and easing
-                progress_eased = progress * progress * (3.0 - 2.0 * progress)  # Smooth step
-
-                x = start_x + (target_x - start_x) * progress_eased
-                y = start_y + (target_y - start_y) * progress_eased
-
-                # Add small random variations
-                x += random.uniform(-2, 2)
-                y += random.uniform(-2, 2)
-
-                await self.page.mouse.move(x, y)
-                await asyncio.sleep(random.uniform(0.01, 0.05))
-
-    async def simulate_reading_behavior(self):
-        """Simulate user reading/browsing behavior"""
-        # Random scrolling
-        scroll_amount = random.randint(-200, 200)
-        await self.page.mouse.wheel(0, scroll_amount)
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-
-        # Random clicks on safe areas (not on buttons)
-        width, height = await self.page.evaluate('() => [window.innerWidth, window.innerHeight]')
-        safe_x = random.randint(100, width - 100)
-        safe_y = random.randint(100, height - 100)
-
-        await self.page.mouse.move(safe_x, safe_y)
-        await asyncio.sleep(random.uniform(0.1, 0.3))
+        self.logger.error("Login failed - still on login page")
+        return False
 
     async def wait_for_recaptcha_completion(self, timeout: int = 30) -> bool:
         """Wait for reCAPTCHA to complete with periodic checks"""
@@ -269,134 +218,23 @@ class TentenDDNSUpdater:
             if completed:
                 return True
 
-            # Continue human-like behavior while waiting
-            await self.simulate_human_mouse_movement(duration=random.uniform(1.0, 2.0))
-            await self.simulate_reading_behavior()
+            # TODO: Continue human-like behavior while waiting
             await asyncio.sleep(random.uniform(0.5, 1.0))
 
-        return False
-
-    async def handle_recaptcha(self) -> bool:
-        """Handle reCAPTCHA v3 verification with human-like behavior"""
-        try:
-            # Initial wait for page to stabilize
-            await self.page.wait_for_timeout(self.RECAPTCHA_TIMEOUT)
-
-            # Check for reCAPTCHA presence
-            recaptcha_present = await self.page.evaluate('''
-                () => {
-                    return !!document.querySelector('.g-recaptcha') || 
-                           !!document.querySelector('[data-sitekey]') ||
-                           !!document.querySelector('iframe[src*="recaptcha"]') ||
-                           (typeof grecaptcha !== 'undefined');
-                }
-            ''')
-
-            if not recaptcha_present:
-                self.logger.info("No reCAPTCHA detected")
-                return True
-
-            self.logger.info("reCAPTCHA detected, simulating human behavior...")
-
-            # Start human-like behavior simulation
-            behavior_duration = random.uniform(3.0, 8.0)
-            start_time = asyncio.get_event_loop().time()
-
-            # Initial mouse movement to appear more human
-            await self.simulate_human_mouse_movement(duration=2.0)
-
-            # Look for and interact with reCAPTCHA elements
-            recaptcha_checkbox = await self.page.query_selector('.recaptcha-checkbox-border, .recaptcha-checkbox')
-
-            if recaptcha_checkbox:
-                self.logger.info("Found reCAPTCHA checkbox, clicking...")
-
-                # Move to checkbox with human-like path
-                box = await recaptcha_checkbox.bounding_box()
-                if box:
-                    target_x = box['x'] + box['width'] / 2 + random.uniform(-5, 5)
-                    target_y = box['y'] + box['height'] / 2 + random.uniform(-5, 5)
-
-                    await self.page.mouse.move(target_x, target_y)
-                    await asyncio.sleep(random.uniform(0.1, 0.3))
-                    await self.page.mouse.click(target_x, target_y)
-                    await asyncio.sleep(random.uniform(0.5, 1.0))
-
-            # Continue human behavior while waiting for completion
-            while asyncio.get_event_loop().time() - start_time < behavior_duration:
-                await self.simulate_human_mouse_movement(duration=random.uniform(1.5, 3.0))
-                await self.simulate_reading_behavior()
-
-                # Check if completed
-                if await self.wait_for_recaptcha_completion(timeout=2):
-                    self.logger.info("reCAPTCHA completed successfully")
-                    return True
-
-                await asyncio.sleep(random.uniform(0.5, 1.5))
-
-            # Final check for completion
-            final_check = await self.wait_for_recaptcha_completion(timeout=5)
-
-            if final_check:
-                self.logger.info("reCAPTCHA solved successfully")
-                return True
-            else:
-                self.logger.warning("reCAPTCHA may not have completed within expected time")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Error handling reCAPTCHA: {e}")
-            return False
-
-    # Additional utility function for enhanced detection
-    async def detect_recaptcha_type(self) -> str:
-        """Detect the type of reCAPTCHA present"""
-        recaptcha_info = await self.page.evaluate('''
-            () => {
-                const info = {
-                    v2_checkbox: !!document.querySelector('.g-recaptcha'),
-                    v2_invisible: !!document.querySelector('[data-size="invisible"]'),
-                    v3: typeof grecaptcha !== 'undefined' && !document.querySelector('.g-recaptcha'),
-                    enterprise: !!document.querySelector('[data-sitekey][data-enterprise]')
-                };
-                
-                if (info.enterprise) return 'enterprise';
-                if (info.v3) return 'v3';
-                if (info.v2_invisible) return 'v2_invisible';
-                if (info.v2_checkbox) return 'v2_checkbox';
-                return 'unknown';
-            }
-        ''')
-
-        return recaptcha_info
-
-    async def check_login_status(self) -> bool:
-        """Check if login was successful and handle errors"""
-        current_url = self.page.url
-        if "login" not in current_url.lower():
-            return True
-
-        error_element = await self.find_element(self.ERROR_SELECTORS)
-        if error_element:
-            error_text = await error_element.inner_text()
-            self.logger.error(f"Login error: {error_text}")
-            return False
-
-        self.logger.error("Login failed - still on login page")
         return False
 
     async def login(self) -> bool:
         """Login to tenten.vn domain management"""
         try:
+            await self.page.wait_for_load_state('networkidle', timeout=self.NETWORK_IDLE_TIMEOUT)
             credentials = self.config["credentials"]
             username = credentials["username"]
             password = credentials["password"]
 
             self.logger.info("Navigating to DNS settings page...")
             await self.page.goto(self.DNS_SETTINGS_URL)
-            await self.handle_recaptcha()
 
-        # Check if already logged in
+            # Check if already logged in
             if "login" not in self.page.url.lower():
                 self.logger.info("Already logged in, proceeding to DNS settings")
                 return True
@@ -411,8 +249,7 @@ class TentenDDNSUpdater:
                 raise Exception("Could not find username/email field")
             await username_field.fill(username)
 
-            await self.page.wait_for_timeout(500)  # Wait for a second to
-            await self.page.mouse.move(100, 100)
+            await self.page.wait_for_timeout(1000)  # Wait for a second to
 
             # Find and fill password field
             password_field = await self.find_element(self.PASSWORD_SELECTORS)
@@ -420,13 +257,16 @@ class TentenDDNSUpdater:
                 raise Exception("Could not find password field")
             await password_field.fill(password)
 
-            await self.page.wait_for_timeout(500)
-            await self.page.mouse.move(100, 100)
+            await self.page.wait_for_timeout(1000)
 
             # Submit form
             submit_btn = await self.find_element(self.SUBMIT_SELECTORS)
             if not submit_btn:
                 raise Exception("Could not find submit button")
+
+            await self.page.wait_for_load_state('networkidle', timeout=self.NETWORK_IDLE_TIMEOUT)
+            await self.page.wait_for_timeout(5000)  # Wait for any potential reCAPTCHA to load
+            await self.wait_for_recaptcha_completion()
             await submit_btn.click()
 
             # Wait for navigation and check login status
@@ -509,6 +349,7 @@ class TentenDDNSUpdater:
     async def cleanup(self):
         """Clean up browser resources"""
         try:
+            await self.page.close() if self.page else None
             await self.browser.close() if self.browser else None
             await self.playwright.stop() if hasattr(self, 'playwright') else None
             self.logger.info("Browser cleanup completed")
