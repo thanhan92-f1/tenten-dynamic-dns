@@ -10,11 +10,25 @@
     "headless": true,
     "user_data_dir": "chrome-data",
     "timeout": 30000,
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "args": [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-infobars"
+    ],
+    "ignore_default_args": [
+        "--enable-automation",
+        "--disable-extensions"
+    ],
+    "device_scale_factor": 1,
+    "locale": "vi-VN",
+    "timezoneId": "Asia/Ho_Chi_Minh",
+    "viewport": {
+        "width": 1280,
+        "height": 720
+    }
   },
   "logging": {
     "level": "INFO",
     "file": "ddns_updater.log"
-  },
-  "captcha_api_key": "c10e0c411690b8c8dc9a62368103da99"
+  }
 }

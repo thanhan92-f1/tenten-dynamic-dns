@@ -5,45 +5,12 @@ Automates A record updates using Playwright browser automation
 import asyncio
 import json
 import logging
+import random
 import sys
-from multiprocessing.util import is_exiting
 from typing import Optional, Dict, Any, List
 import argparse
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import async_playwright, Page, BrowserContext, ViewportSize
 import requests
-
-import os
-
-async def solve_recaptcha(site_key, page_url, api_key):
-    import requests
-    import time
-
-    print("[🤖] Solving reCAPTCHA with 2Captcha...")
-
-    payload = {
-        'key': api_key,
-        'method': 'userrecaptcha',
-        'version': 'v3',
-        'action': 'login',
-        'min_score': 0.3,
-        'googlekey': site_key,
-        'pageurl': page_url,
-        'json': 1
-    }
-
-    res = requests.post("http://2captcha.com/in.php", data=payload).json()
-    if res['status'] != 1:
-        raise Exception(f"2Captcha request failed: {res}")
-    request_id = res['request']
-
-    for _ in range(20):
-        time.sleep(5)
-        result = requests.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={request_id}&json=1").json()
-        if result['status'] == 1:
-            print("[✅] Got reCAPTCHA token!")
-            return result['request']
-    raise Exception("2Captcha solving timed out")
-
 
 class TentenDDNSUpdater:
     # Class constants for selectors
@@ -159,17 +126,17 @@ class TentenDDNSUpdater:
 
             self.browser = await self.playwright.chromium.launch_persistent_context(
                 headless=browser_settings.get("headless", False),
-                user_data_dir=browser_settings.get("user_data_dir", "chrome-data"),
+                args=browser_settings.get("args"),
+                ignore_default_args= browser_settings.get("ignore_default_args"),
                 user_agent=browser_settings.get("user_agent", ""),
-                no_viewport= browser_settings.get("no_viewport", True),
-                args=browser_settings.get("args", [
-                    "--disable-web-security",
-                    "--disable-features=IsolateOrigins,site-per-process",
-                    "--disable-blink-features=AutomationControlled"
-                ])
+                user_data_dir=browser_settings.get("user_data_dir", ""),
+                viewport= ViewportSize(browser_settings.get("viewport", {})) if browser_settings.get("viewport") else None,
+                device_scale_factor=browser_settings.get("device_scale_factor", 1),
+                locale= browser_settings.get("locale", "vi-VN"),
+                timezone_id=browser_settings.get("timezone_id", "Asia/Ho_Chi_Minh")
             )
 
-            self.page = await self.browser.new_page()
+            self.page = self.browser.pages[0] if self.browser.pages else await self.browser.new_page()
             self.page.set_default_timeout(browser_settings.get("timeout", 30000))
 
             self.logger.info("Browser initialized successfully")
@@ -185,51 +152,11 @@ class TentenDDNSUpdater:
             try:
                 element = await search_context.query_selector(selector)
                 if element:
+                    await element.focus() if await element.evaluate('el => el.tagName.toLowerCase() in ["input", "textarea"]') else None
                     return element
-            except Exception:
+            except:
                 continue
-            return None
-    
-        async def handle_recaptcha(self) -> bool:
-            """Handle reCAPTCHA v3 verification"""
-            try:
-                await self.page.wait_for_timeout(self.RECAPTCHA_TIMEOUT)
-    
-                # Detect reCAPTCHA
-                site_key = await self.page.evaluate('''
-                    () => {
-                        const el = document.querySelector('[data-sitekey]');
-                        return el ? el.getAttribute('data-sitekey') : null;
-                    }
-                ''')
-    
-                if not site_key:
-                    self.logger.info("No reCAPTCHA sitekey found — skipping solving.")
-                    return True
-    
-                self.logger.info(f"reCAPTCHA detected, sitekey: {site_key}")
-    
-                # Solve using 2Captcha
-                page_url = self.page.url
-                api_key = self.config.get("captcha_api_key") or os.environ.get("CAPTCHA_API_KEY")
-                if not api_key:
-                    raise Exception("2Captcha API key not found in config or environment")
-    
-                token = await solve_recaptcha(site_key, page_url, api_key)
-    
-                # Inject the token
-                await self.page.evaluate(f'''
-                    document.querySelector('textarea[name="g-recaptcha-response"]').value = "{token}";
-                    document.querySelector('[name="g-recaptcha-response"]').innerHTML = "{token}";
-                ''')
-    
-                self.logger.info("reCAPTCHA token injected")
-                return True
-    
-            except Exception as e:
-                self.logger.error(f"reCAPTCHA solving failed: {e}")
-                return False
-
+        return None
 
     async def check_login_status(self) -> bool:
         """Check if login was successful and handle errors"""
@@ -246,18 +173,68 @@ class TentenDDNSUpdater:
         self.logger.error("Login failed - still on login page")
         return False
 
+    async def wait_for_recaptcha_completion(self, timeout: int = 30) -> bool:
+        """Wait for reCAPTCHA to complete with periodic checks"""
+        start_time = asyncio.get_event_loop().time()
+
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            # Check if reCAPTCHA is completed
+            completed = await self.page.evaluate('''
+                () => {
+                    // Check for reCAPTCHA v3 completion indicators
+                    const recaptchaElements = document.querySelectorAll('[data-sitekey]');
+                    const iframes = document.querySelectorAll('iframe[src*="recaptcha"]');
+                    
+                    // Check if grecaptcha object exists and has a response
+                    if (typeof grecaptcha !== 'undefined') {
+                        try {
+                            const response = grecaptcha.getResponse();
+                            if (response && response.length > 0) {
+                                return true;
+                            }
+                        } catch (e) {
+                            // Ignore errors
+                        }
+                    }
+                    
+                    // Check for completed visual indicators
+                    const completedElements = document.querySelectorAll('.recaptcha-checkbox-checked, .recaptcha-success');
+                    if (completedElements.length > 0) {
+                        return true;
+                    }
+                    
+                    // Check for hidden reCAPTCHA completion
+                    const hiddenInputs = document.querySelectorAll('input[name="recaptchaToken"]');
+                    for (const input of hiddenInputs) {
+                        if (input.value && input.value.length > 0) {
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                }
+            ''')
+
+            if completed:
+                return True
+
+            # TODO: Continue human-like behavior while waiting
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        return False
+
     async def login(self) -> bool:
         """Login to tenten.vn domain management"""
         try:
+            await self.page.wait_for_load_state('networkidle', timeout=self.NETWORK_IDLE_TIMEOUT)
             credentials = self.config["credentials"]
             username = credentials["username"]
             password = credentials["password"]
 
             self.logger.info("Navigating to DNS settings page...")
             await self.page.goto(self.DNS_SETTINGS_URL)
-            await self.handle_recaptcha()
 
-        # Check if already logged in
+            # Check if already logged in
             if "login" not in self.page.url.lower():
                 self.logger.info("Already logged in, proceeding to DNS settings")
                 return True
@@ -272,8 +249,7 @@ class TentenDDNSUpdater:
                 raise Exception("Could not find username/email field")
             await username_field.fill(username)
 
-            await self.page.wait_for_timeout(500)  # Wait for a second to
-            await self.page.mouse.move(100, 100)
+            await self.page.wait_for_timeout(1000)  # Wait for a second to
 
             # Find and fill password field
             password_field = await self.find_element(self.PASSWORD_SELECTORS)
@@ -281,13 +257,16 @@ class TentenDDNSUpdater:
                 raise Exception("Could not find password field")
             await password_field.fill(password)
 
-            await self.page.wait_for_timeout(500)
-            await self.page.mouse.move(100, 100)
+            await self.page.wait_for_timeout(1000)
 
             # Submit form
             submit_btn = await self.find_element(self.SUBMIT_SELECTORS)
             if not submit_btn:
                 raise Exception("Could not find submit button")
+
+            await self.page.wait_for_load_state('networkidle', timeout=self.NETWORK_IDLE_TIMEOUT)
+            await self.page.wait_for_timeout(5000)  # Wait for any potential reCAPTCHA to load
+            await self.wait_for_recaptcha_completion()
             await submit_btn.click()
 
             # Wait for navigation and check login status
@@ -370,6 +349,7 @@ class TentenDDNSUpdater:
     async def cleanup(self):
         """Clean up browser resources"""
         try:
+            await self.page.close() if self.page else None
             await self.browser.close() if self.browser else None
             await self.playwright.stop() if hasattr(self, 'playwright') else None
             self.logger.info("Browser cleanup completed")
