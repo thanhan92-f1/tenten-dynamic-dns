@@ -12,6 +12,39 @@ import argparse
 from playwright.async_api import async_playwright, Page, BrowserContext
 import requests
 
+import os
+
+async def solve_recaptcha(site_key, page_url, api_key):
+    import requests
+    import time
+
+    print("[🤖] Solving reCAPTCHA with 2Captcha...")
+
+    payload = {
+        'key': api_key,
+        'method': 'userrecaptcha',
+        'version': 'v3',
+        'action': 'login',
+        'min_score': 0.3,
+        'googlekey': site_key,
+        'pageurl': page_url,
+        'json': 1
+    }
+
+    res = requests.post("http://2captcha.com/in.php", data=payload).json()
+    if res['status'] != 1:
+        raise Exception(f"2Captcha request failed: {res}")
+    request_id = res['request']
+
+    for _ in range(20):
+        time.sleep(5)
+        result = requests.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={request_id}&json=1").json()
+        if result['status'] == 1:
+            print("[✅] Got reCAPTCHA token!")
+            return result['request']
+    raise Exception("2Captcha solving timed out")
+
+
 class TentenDDNSUpdater:
     # Class constants for selectors
     USERNAME_SELECTORS = [
@@ -155,38 +188,48 @@ class TentenDDNSUpdater:
                     return element
             except Exception:
                 continue
-        return None
-
-    async def handle_recaptcha(self) -> bool:
-        """Handle reCAPTCHA v3 verification"""
-        try:
-            await self.page.wait_for_timeout(self.RECAPTCHA_TIMEOUT)
-
-            recaptcha_present = await self.page.evaluate('''
-                () => {
-                    return !!document.querySelector('.g-recaptcha') || 
-                           !!document.querySelector('[data-sitekey]') ||
-                           !!document.querySelector('iframe[src*="recaptcha"]');
-                }
-            ''')
-
-            if not recaptcha_present:
-                self.logger.info("No reCAPTCHA detected")
+            return None
+    
+        async def handle_recaptcha(self) -> bool:
+            """Handle reCAPTCHA v3 verification"""
+            try:
+                await self.page.wait_for_timeout(self.RECAPTCHA_TIMEOUT)
+    
+                # Detect reCAPTCHA
+                site_key = await self.page.evaluate('''
+                    () => {
+                        const el = document.querySelector('[data-sitekey]');
+                        return el ? el.getAttribute('data-sitekey') : null;
+                    }
+                ''')
+    
+                if not site_key:
+                    self.logger.info("No reCAPTCHA sitekey found — skipping solving.")
+                    return True
+    
+                self.logger.info(f"reCAPTCHA detected, sitekey: {site_key}")
+    
+                # Solve using 2Captcha
+                page_url = self.page.url
+                api_key = self.config.get("captcha_api_key") or os.environ.get("CAPTCHA_API_KEY")
+                if not api_key:
+                    raise Exception("2Captcha API key not found in config or environment")
+    
+                token = await solve_recaptcha(site_key, page_url, api_key)
+    
+                # Inject the token
+                await self.page.evaluate(f'''
+                    document.querySelector('textarea[name="g-recaptcha-response"]').value = "{token}";
+                    document.querySelector('[name="g-recaptcha-response"]').innerHTML = "{token}";
+                ''')
+    
+                self.logger.info("reCAPTCHA token injected")
                 return True
+    
+            except Exception as e:
+                self.logger.error(f"reCAPTCHA solving failed: {e}")
+                return False
 
-            self.logger.info("reCAPTCHA detected, attempting to solve...")
-
-            await self.page.mouse.move(100, 100)
-            await self.page.wait_for_timeout(2000)  # Wait for a second to ensure page is ready
-            await self.page.mouse.move(200, 200)
-            await self.page.wait_for_timeout(2000)  # Wait for reCAPTCHA to load
-
-            self.logger.info("reCAPTCHA was detected, but no solving mechanism implemented.")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error handling reCAPTCHA: {e}")
-            return False
 
     async def check_login_status(self) -> bool:
         """Check if login was successful and handle errors"""

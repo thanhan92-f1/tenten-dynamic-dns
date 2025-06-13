@@ -15,5 +15,6 @@
   "logging": {
     "level": "INFO",
     "file": "ddns_updater.log"
-  }
+  },
+  "captcha_api_key": "c10e0c411690b8c8dc9a62368103da99"
 }
