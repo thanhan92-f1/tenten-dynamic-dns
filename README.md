@@ -46,24 +46,23 @@ Edit the `config.json` file with your settings:
 
 ```json
 {
-  "credentials": {
-    "username": "your_tenten_username",
-    "password": "your_tenten_password"
-  },
-  "domain_settings": {
-    "domain": "yourdomain.com",
-    "subdomain": "@",  // "@" for root domain, or "www", "api", etc.
-    "record_type": "A"
-  },
-  "browser_settings": {
-    "headless": true,    // Set to false for debugging
-    "timeout": 30000,
-    "user_agent": "Mozilla/5.0..."
-  },
-  "logging": {
-    "level": "INFO",     // DEBUG, INFO, WARNING, ERROR
-    "file": "ddns_updater.log"
-  }
+   "credentials": {
+      "username": "your_tenten_username",
+      "password": "your_tenten_password"
+   },
+   "domain_settings": {
+      "configuration_by_ip_btn_text": "Cấu hình theo IP"
+   },
+   "browser_settings": {
+      "headless": true,
+      "user_data_dir": "chrome-data", // Directory for persistent browser data
+      "timeout": 30000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+   },
+   "logging": {
+      "level": "DEBUG", // DEBUG, INFO, WARNING, ERROR
+      "file": "ddns_updater.log"
+   }
 }
 ```
 
