@@ -1,4 +1,4 @@
-﻿# Tenten Dynamic DNS Updater
+﻿# Custom Tenten Dynamic DNS Updater 2.0
 
 A Python-based dynamic DNS updater for domain.tenten.vn using Playwright browser automation. Since tenten.vn doesn't provide a DUC (Dynamic Update Client) service, this tool automates the web interface to update DNS A records when your IP address changes.
 
